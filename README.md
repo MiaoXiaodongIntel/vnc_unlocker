@@ -27,7 +27,7 @@ only while you are away from the keyboard.
 ## Requirements
 
 - Windows 10 / 11 with the OCR language packs you want to use (e.g. `en-US`, `zh-Hans-CN`)
-- Python 3.10+
+- Python 3.10+ (developed and tested with 3.15)
 - RealVNC Viewer
 
 ## Installation
