@@ -1,0 +1,50 @@
+# vnc_unlocker configuration template. Copy to config.yaml and fill in 'accounts' / 'hosts'.
+# Passwords are NOT stored here: use the "VNC Unlocker Passwords" Desktop shortcut or the
+# tray menu "Passwords...". The file is reloaded automatically when changed.
+
+scan_interval: 5        # seconds between scans
+idle_threshold: 30      # only act when the local user has been idle this many seconds
+cooldown: 60            # seconds between unlock attempts on the same host
+max_attempts: 2         # failed attempts before the host is paused (protects against AD lockout)
+max_failures: 3         # runs in a row that could not even type a password (window focus failed, unknown
+                        # screen, ...) before the host is paused; unlocking the remote by hand resumes it
+settle_timeout: 15      # max wait for the VNC picture to stop changing after each step (RealVNC can lag seconds)
+click_wait: 1.5         # wait after clicking a user tile
+verify_timeout: 20      # max wait after pressing Enter for the unlock result
+key_delay: 0.03         # extra delay between keystrokes
+
+ocr_languages: [zh-Hans-CN, en-US]
+ocr_min_width: 1600     # small VNC windows are upscaled to this width before OCR
+max_lines: 30           # screens with more OCR lines than this are treated as a normal desktop
+
+# Optional extra keywords (groups: password, username, other_user, incorrect, cad)
+# extra_keywords:
+#   password: ["Mot de passe"]
+
+# accounts: defined ONCE here and referenced by name from hosts. One stored password per account,
+#   shared by every host that uses it (update it once in the password window when it changes).
+#   user          account typed on the "user name + password" screen (domain: DOMAIN\x, local: .\x)
+#   display_names names shown on the lock screen (the short user name is added automatically)
+#   cred          optional keyring entry name; defaults to 'user'. Only set it when the same user name
+#                 has DIFFERENT passwords on different hosts (then define two accounts with different creds).
+#
+# hosts: 'match' is a case-insensitive regex (or a list of them) searched in the window title,
+#   e.g. "123456 (MYHOST01) - RealVNC Viewer". To add a machine, add one line to a match list.
+#   accounts      names from the top-level 'accounts' section
+#   default       account used after a reboot ("Other user" / user list screens); optional if only one account
+accounts:
+  local_admin:
+    user: '.\local_admin'
+    display_names: ['local_admin']
+  domain_user:
+    user: 'DOMAIN\jdoe'
+    display_names: ['Doe, John']
+
+hosts:
+  - match:
+      - 'MYHOST01'
+      - 'MYHOST02'
+    accounts: [local_admin, domain_user]
+    default: local_admin
+  - match: 'MYHOST03'
+    accounts: [domain_user]
