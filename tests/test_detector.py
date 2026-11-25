@@ -1,6 +1,8 @@
 import pytest
 from conftest import OTHER_ACCOUNT
+from PIL import Image
 
+import detector
 from config import DEFAULT_KEYWORDS
 from detector import Analysis, Line, State, classify, normalize
 from unlocker import find_tile, match_account
@@ -38,6 +40,28 @@ def test_curtain(lines):
 
 def test_date_without_big_clock_is_not_curtain():
     assert run(L("December 14, 2023", 100, 480), L("everywhere", 100, 350, 500, 90)).state == State.NOT_LOCKED
+
+
+@pytest.mark.parametrize(("crop_clock", "taskbar", "expected"), [
+    ("1:16", False, State.CURTAIN),
+    ("1:iQ", False, State.NOT_LOCKED),
+    ("1:16", True, State.NOT_LOCKED),
+])
+def test_busy_win11_curtain_rechecks_clock_region(monkeypatch, crop_clock, taskbar, expected):
+    full = [L("Wednesday, Nqyember 25 wallpaper text", 795, 270, 862, 63)]
+    full += [L(f"wallpaper text {i}", 85, 300 + 16 * i, 300, 15) for i in range(40)]
+    if taskbar:
+        full.append(L("9:10", 1800, 1040, 40, 15))
+    cropped = [L(crop_clock, 295, 96, 209, 102), L("Wednesday, November 25 d", 237, 205, 554, 63)]
+    calls = []
+
+    def fake_ocr(image, languages, min_width):
+        calls.append(image.size)
+        return full if image.size == (W, H) else cropped
+
+    monkeypatch.setattr(detector, "ocr_lines", fake_ocr)
+    assert detector.analyze(Image.new("RGB", (W, H)), ["en-US"], KW).state == expected
+    assert len(calls) == (1 if taskbar else 2)
 
 
 @pytest.mark.parametrize("rest", [

@@ -169,7 +169,8 @@ def _find_user_tile(lines: list[Line], width: int, height: int, user_names) -> L
     return None
 
 
-def _find_curtain(lines: list[Line], height: int) -> str | None:
+def _find_curtain(lines: list[Line], height: int, *, clock_pattern: re.Pattern[str] = _CLOCKISH,
+                  min_height_ratio: float = 1.8) -> str | None:
     """Big clock directly above a short date line ("Thursday, November 12" / "11月12日 星期四").
 
     The thin clock font is often misread ("9:iQ"), so the clock only needs to be a large
@@ -179,7 +180,8 @@ def _find_curtain(lines: list[Line], height: int) -> str | None:
         if len(date.norm) > 30 or not _DATE.search(date.norm):
             continue
         for clock in lines:
-            if clock is date or clock.h < max(0.05 * height, 1.8 * date.h) or not _CLOCKISH.search(clock.norm):
+            if (clock is date or clock.h < max(0.05 * height, min_height_ratio * date.h)
+                    or not clock_pattern.fullmatch(clock.norm)):
                 continue
             gap = date.y - (clock.y + clock.h)
             overlap = min(clock.x + clock.w, date.x + date.w) - max(clock.x, date.x)
@@ -190,4 +192,22 @@ def _find_curtain(lines: list[Line], height: int) -> str | None:
 
 def analyze(img: Image.Image, languages: list[str], keywords: dict[str, list[str]],
             min_width: int = 1600, max_lines: int = 30, user_names=()) -> Analysis:
-    return classify(ocr_lines(img, languages, min_width), img.width, img.height, keywords, max_lines, user_names)
+    width, height = img.size
+    a = classify(ocr_lines(img, languages, min_width), width, height, keywords, max_lines, user_names)
+    if a.state != State.NOT_LOCKED or not a.reason.startswith("too many lines"):
+        return a
+    if not any(0.35 * width <= l.cx <= 0.65 * width and 0.15 * height <= l.cy <= 0.35 * height
+               and _DATE.search(l.norm) for l in a.lines):
+        return a
+
+    # Wallpaper text can merge into the centered Win11 date and hide the clock from full-frame OCR.
+    crop = img.crop((round(0.29 * width), round(0.06 * height), round(0.71 * width), round(0.35 * height)))
+    lines = ocr_lines(crop, languages, min_width)
+    candidates = [
+        l for l in lines
+        if not _TIME.fullmatch(l.norm) or (0.25 * crop.width <= l.cx <= 0.75 * crop.width and l.h >= 0.07 * height)
+    ]
+    curtain = _find_curtain(candidates, height, clock_pattern=_TIME, min_height_ratio=1.5)
+    if curtain:
+        a.state, a.reason = State.CURTAIN, f"{curtain} (clock-region OCR)"
+    return a

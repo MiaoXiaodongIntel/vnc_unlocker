@@ -206,8 +206,7 @@ def cmd_diag(out_dir: Path) -> None:
         path = out_dir / f"{safe}.png"
         cap.image.save(path)
         print(f"capture: {cap.method} {cap.image.size} black={capture.is_mostly_black(cap.image)} -> {path}")
-        lines = detector.ocr_lines(cap.image, s.ocr_languages, s.ocr_min_width)
-        a = detector.classify(lines, cap.image.width, cap.image.height, s.keywords, s.max_lines, s.user_names)
+        a = s.analyze(cap.image)
         print(f"state: {a.state.value} ({a.reason})")
         if host:
             if a.state in (detector.State.PASSWORD, detector.State.INCORRECT):
@@ -216,7 +215,7 @@ def cmd_diag(out_dir: Path) -> None:
             elif a.state == detector.State.USER_PASS:
                 acc = host.default_account
                 print(f"default account: {acc.user if acc else 'NONE - set default: true'}")
-        for l in lines:
+        for l in a.lines:
             print(f"  [{l.x:6.0f},{l.y:6.0f} {l.w:5.0f}x{l.h:4.0f}] {l.text}")
 
 

@@ -10,6 +10,7 @@ only while you are away from the keyboard.
 - Detects the remote screen state via OCR (English and Chinese out of the box):
   lock-screen curtain, password prompt, "Other user" / user name + password, wrong password,
   Ctrl+Alt+Del prompt, or normal desktop.
+- Rechecks the centered Windows 11 clock and date when wallpaper text interferes with full-window OCR.
 - Works with covered or background VNC windows (captures the window content directly).
 - Maps window titles to hosts with regular expressions; accounts are defined once and shared by
   multiple hosts. Picks the right account from the user tile shown on the lock screen and can select
