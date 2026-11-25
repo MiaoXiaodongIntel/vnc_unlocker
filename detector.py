@@ -10,6 +10,7 @@ from PIL import Image
 
 
 class State(str, Enum):
+    UNKNOWN = "unknown"          # insufficient evidence to act or verify unlock
     NOT_LOCKED = "not_locked"
     CURTAIN = "curtain"          # lock screen with big clock/date, no password box yet
     PASSWORD = "password"        # single user tile + password box
@@ -61,7 +62,8 @@ class Analysis:
 
 
 _WS = re.compile(r"[\s\-‐‑–—_]+")
-_TIME = re.compile(r"^\d{1,2}:\d{2}$")
+_VALID_TIME = re.compile(r"(?:[01]?\d|2[0-3]):[0-5]\d")
+_TASKBAR_TIME = re.compile(_VALID_TIME.pattern + r"(?::[0-5]\d)?(?:am|pm)?")
 _CLOCKISH = re.compile(r"^\d{1,2}[:.]?\S{0,3}$")
 _DATE = re.compile(
     r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday"
@@ -108,15 +110,15 @@ def _any(lines: list[Line], keywords: list[str], max_len: int | None = None) -> 
 
 def classify(lines: list[Line], width: int, height: int, keywords: dict[str, list[str]], max_lines: int = 30,
              user_names=()) -> Analysis:
-    a = Analysis(State.NOT_LOCKED, lines, width, height)
+    a = Analysis(State.UNKNOWN, lines, width, height)
     if not lines:
         a.reason = "no text"
         return a
 
     # Lock screens have no taskbar: a small clock in the bottom-right corner means a normal desktop.
     for l in lines:
-        if _TIME.match(l.norm) and l.cy > 0.9 * height and l.cx > 0.75 * width and l.h < 0.05 * height:
-            a.reason = f"taskbar clock '{l.text}'"
+        if _TASKBAR_TIME.fullmatch(l.norm) and l.cy > 0.9 * height and l.cx > 0.75 * width and l.h < 0.05 * height:
+            a.state, a.reason = State.NOT_LOCKED, f"taskbar clock '{l.text}'"
             return a
 
     # Checked before max_lines: the Win11 lock curtain may show a widget panel full of text.
@@ -155,7 +157,7 @@ def classify(lines: list[Line], width: int, height: int, keywords: dict[str, lis
         a.state, a.reason = State.PASSWORD, f"user tile '{tile.text}'"
         return a
 
-    a.reason = "no lock indicators"
+    a.reason = "no lock screen or desktop indicators"
     return a
 
 
@@ -194,10 +196,7 @@ def analyze(img: Image.Image, languages: list[str], keywords: dict[str, list[str
             min_width: int = 1600, max_lines: int = 30, user_names=()) -> Analysis:
     width, height = img.size
     a = classify(ocr_lines(img, languages, min_width), width, height, keywords, max_lines, user_names)
-    if a.state != State.NOT_LOCKED or not a.reason.startswith("too many lines"):
-        return a
-    if not any(0.35 * width <= l.cx <= 0.65 * width and 0.15 * height <= l.cy <= 0.35 * height
-               and _DATE.search(l.norm) for l in a.lines):
+    if a.state != State.UNKNOWN:
         return a
 
     # Wallpaper text can merge into the centered Win11 date and hide the clock from full-frame OCR.
@@ -205,9 +204,10 @@ def analyze(img: Image.Image, languages: list[str], keywords: dict[str, list[str
     lines = ocr_lines(crop, languages, min_width)
     candidates = [
         l for l in lines
-        if not _TIME.fullmatch(l.norm) or (0.25 * crop.width <= l.cx <= 0.75 * crop.width and l.h >= 0.07 * height)
+        if 0.25 * crop.width <= l.cx <= 0.75 * crop.width
+        and (not _VALID_TIME.fullmatch(l.norm) or l.h >= 0.07 * height)
     ]
-    curtain = _find_curtain(candidates, height, clock_pattern=_TIME, min_height_ratio=1.5)
+    curtain = _find_curtain(candidates, height, clock_pattern=_VALID_TIME, min_height_ratio=1.5)
     if curtain:
         a.state, a.reason = State.CURTAIN, f"{curtain} (clock-region OCR)"
     return a

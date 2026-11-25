@@ -10,7 +10,8 @@ only while you are away from the keyboard.
 - Detects the remote screen state via OCR (English and Chinese out of the box):
   lock-screen curtain, password prompt, "Other user" / user name + password, wrong password,
   Ctrl+Alt+Del prompt, or normal desktop.
-- Rechecks the centered Windows 11 clock and date when wallpaper text interferes with full-window OCR.
+- Rechecks the centered Windows 11 clock and date whenever full-window OCR cannot identify the screen,
+  even if wallpaper text hid both from the first pass.
 - Works with covered or background VNC windows (captures the window content directly).
 - Maps window titles to hosts with regular expressions; accounts are defined once and shared by
   multiple hosts. Picks the right account from the user tile shown on the lock screen and can select
@@ -20,6 +21,9 @@ only while you are away from the keyboard.
   - acts only after the local user has been idle for `idle_threshold` seconds, and aborts
     immediately on any real keyboard / mouse input;
   - never types while the local workstation is locked or Caps Lock is on;
+  - keeps scanning an unrecognized screen without sending input or reporting success. It notifies once
+    per host after 30 seconds of unrecognized scans. If the taskbar clock is hidden or unreadable, a
+    normal desktop can also appear unrecognized;
   - pauses a host after `max_attempts` wrong passwords (protects against AD account lockout) or after
     `max_failures` runs that could not type at all; changing the password or unlocking by hand resumes it.
 - Tray menu: pause, scan now, reset hosts, password manager, open config, open log.

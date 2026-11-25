@@ -39,20 +39,22 @@ def test_curtain(lines):
 
 
 def test_date_without_big_clock_is_not_curtain():
-    assert run(L("December 14, 2023", 100, 480), L("everywhere", 100, 350, 500, 90)).state == State.NOT_LOCKED
+    assert run(L("December 14, 2023", 100, 480), L("everywhere", 100, 350, 500, 90)).state == State.UNKNOWN
 
 
-@pytest.mark.parametrize(("crop_clock", "taskbar", "expected"), [
-    ("1:16", False, State.CURTAIN),
-    ("1:iQ", False, State.NOT_LOCKED),
-    ("1:16", True, State.NOT_LOCKED),
+@pytest.mark.parametrize(("full_kind", "crop_clock", "crop_date", "expected"), [
+    ("busy", "1:16", "Wednesday, November 25 d", State.CURTAIN),
+    ("blank", "1:16", "11月25日 星期三", State.CURTAIN),
+    ("busy", "1:iQ", "Wednesday, November 25", State.UNKNOWN),
+    ("busy", "1:99", "Wednesday, November 25", State.UNKNOWN),
+    ("busy", "1:16", "News headlines", State.UNKNOWN),
+    ("desktop", "1:16", "Wednesday, November 25", State.NOT_LOCKED),
 ])
-def test_busy_win11_curtain_rechecks_clock_region(monkeypatch, crop_clock, taskbar, expected):
-    full = [L("Wednesday, Nqyember 25 wallpaper text", 795, 270, 862, 63)]
-    full += [L(f"wallpaper text {i}", 85, 300 + 16 * i, 300, 15) for i in range(40)]
-    if taskbar:
-        full.append(L("9:10", 1800, 1040, 40, 15))
-    cropped = [L(crop_clock, 295, 96, 209, 102), L("Wednesday, November 25 d", 237, 205, 554, 63)]
+def test_unknown_screen_rechecks_clock_region(monkeypatch, full_kind, crop_clock, crop_date, expected):
+    full = [] if full_kind == "blank" else [L(f"wallpaper text {i}", 85, 300 + 16 * i, 300, 15) for i in range(40)]
+    if full_kind == "desktop":
+        full += [L("1:16", 795, 125, 220, 102), L(crop_date, 745, 240, 310), L("9:10 PM", 1800, 1040, 65, 15)]
+    cropped = [L(crop_clock, 295, 96, 209, 102), L(crop_date, 237, 205, 554, 63)]
     calls = []
 
     def fake_ocr(image, languages, min_width):
@@ -61,7 +63,7 @@ def test_busy_win11_curtain_rechecks_clock_region(monkeypatch, crop_clock, taskb
 
     monkeypatch.setattr(detector, "ocr_lines", fake_ocr)
     assert detector.analyze(Image.new("RGB", (W, H)), ["en-US"], KW).state == expected
-    assert len(calls) == (1 if taskbar else 2)
+    assert len(calls) == (1 if full_kind == "desktop" else 2)
 
 
 @pytest.mark.parametrize("rest", [
@@ -98,11 +100,11 @@ def test_desktop_with_taskbar_clock_is_not_locked():
 
 def test_busy_screen_with_password_word_is_not_locked():
     lines = [L("Password", 860, 580)] + [L(f"text line {i}", 100, 20 * i, 300, 15) for i in range(40)]
-    assert run(*lines).state == State.NOT_LOCKED
+    assert run(*lines).state == State.UNKNOWN
 
 
 def test_password_word_off_centre_is_not_locked():
-    assert run(L("Password", 50, 580)).state == State.NOT_LOCKED
+    assert run(L("Password", 50, 580)).state == State.UNKNOWN
 
 
 def centred(text, y, w=80, h=25):
@@ -113,11 +115,11 @@ def test_user_tile_name_detects_password_screen(account):
     name = account.display_names[0]
     lines = [centred(name, 480), L("has swo rd", 860, 560, 60, 18)]
     assert classify(lines, W, H, KW, user_names=[name]).state == State.PASSWORD
-    assert classify(lines, W, H, KW).state == State.NOT_LOCKED  # name unknown -> no evidence
+    assert classify(lines, W, H, KW).state == State.UNKNOWN  # name unknown -> no evidence
     off = [L(name, 100, 480, 80, 25)]
-    assert classify(off, W, H, KW, user_names=[name]).state == State.NOT_LOCKED
+    assert classify(off, W, H, KW, user_names=[name]).state == State.UNKNOWN
     longer = [centred(f"{name} settings", 480, 160)]
-    assert classify(longer, W, H, KW, user_names=[name]).state == State.NOT_LOCKED
+    assert classify(longer, W, H, KW, user_names=[name]).state == State.UNKNOWN
 
 
 def test_forgot_link_detects_password_screen(account):

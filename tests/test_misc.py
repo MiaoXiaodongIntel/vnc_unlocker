@@ -144,6 +144,100 @@ def test_own_injected_input_does_not_reset_idle(monkeypatch):
     assert u._user_idle() == 0.0 and u._own_tick is None
 
 
+def test_unknown_screen_has_no_input_and_warns_once_until_recognized(monkeypatch, caplog):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import unlocker
+
+    now = 100.0
+    monkeypatch.setattr(unlocker.time, "monotonic", lambda: now)
+    input_session = Mock()
+    monkeypatch.setattr(unlocker, "InputSession", input_session)
+    settings = config.Settings(hosts=[config.HostConfig("H", re.compile("H"), [])])
+    notify = Mock()
+    u = unlocker.Unlocker(settings, notify)
+    w = unlocker.VncWindow(1, "H - RealVNC Viewer", "H", None, False)
+    a = unlocker.Analysis(unlocker.State.UNKNOWN, [], 100, 100, "no text")
+    monkeypatch.setattr(u, "_analyze", lambda w: (a, SimpleNamespace(method="test")))
+    hs = u._state(w.key)
+    hs.attempts = 1
+
+    for now in (100, 129):
+        u._scan_window(w)
+    notify.assert_not_called()
+    for now in (130, 180):
+        u._scan_window(w)
+    notify.assert_called_once()
+    assert "still scanning without sending input" in caplog.text
+    assert hs.attempts == 1
+
+    a.state, a.reason = unlocker.State.NOT_LOCKED, "taskbar clock"
+    u._scan_window(w)
+    assert hs.attempts == 0
+    a.state, a.reason = unlocker.State.UNKNOWN, "no text"
+    for now in (181, 211):
+        u._scan_window(w)
+    assert notify.call_count == 2
+    input_session.assert_not_called()
+
+
+@pytest.mark.parametrize("prior_attempts", [0, 1])
+def test_unknown_after_submit_does_not_report_success(monkeypatch, caplog, prior_attempts):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import unlocker
+
+    account = config.Account("Test User", ["Test User"], "cred")
+    host = config.HostConfig("H", re.compile("H"), [account])
+    notify = Mock()
+    u = unlocker.Unlocker(config.Settings(max_attempts=2), notify)
+    hs = u._state("H")
+    hs.attempts = prior_attempts
+    w = unlocker.VncWindow(1, "H - RealVNC Viewer", "H", None, False)
+    cap = SimpleNamespace(origin=(0, 0))
+    prompt = unlocker.Analysis(unlocker.State.PASSWORD, [unlocker.detector.Line("Test User", 40, 30, 20, 10)],
+                               100, 100)
+    unknown = unlocker.Analysis(unlocker.State.UNKNOWN, [], 100, 100, "no text")
+    verify_accepted = []
+
+    def settled(w, session, timeout, until):
+        if session is not None:
+            return prompt, cap
+        verify_accepted.append(until(unknown))
+        return unknown, cap
+
+    monkeypatch.setattr(u, "_settled", settled)
+    monkeypatch.setattr(unlocker.credstore, "get_password", lambda _: "test-only")
+    u._act(w, host, hs, Mock(), prompt, cap)
+    assert verify_accepted == [False]
+    assert hs.attempts == prior_attempts + 1
+    assert "could not verify unlock" in caplog.text
+    assert hs.paused == (prior_attempts == 1)
+    assert all("Unlocked as" not in call.args[1] for call in notify.call_args_list)
+
+
+def test_settle_timeout_does_not_return_an_older_password_frame(monkeypatch):
+    from PIL import Image
+
+    import unlocker
+
+    w = unlocker.VncWindow(1, "H - RealVNC Viewer", "H", None, False)
+    still, changed = (unlocker.capture.Capture(Image.new("RGB", (10, 10), color), "test", (0, 0))
+                      for color in ("black", "white"))
+    captures = iter((still, still, changed))
+    clock = iter((0, 0, 1, 2))
+    monkeypatch.setattr(unlocker.capture, "capture", lambda _: next(captures))
+    monkeypatch.setattr(unlocker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(unlocker.time, "sleep", lambda _: None)
+    settings = config.Settings()
+    monkeypatch.setattr(settings, "analyze", lambda im: unlocker.Analysis(unlocker.State.PASSWORD, [], *im.size))
+
+    a, cap = unlocker.Unlocker(settings)._settled(w, None, 2, lambda a: a.state == unlocker.State.NOT_LOCKED)
+    assert a.state == unlocker.State.UNKNOWN and cap is changed
+
+
 def test_paused_host_resumes_when_password_changes(monkeypatch):
     import unlocker
 

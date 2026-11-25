@@ -26,6 +26,7 @@ from PIL import Image, ImageChops
 log = logging.getLogger("vnc_unlocker")
 
 SETTLE_POLL = 0.5
+UNKNOWN_NOTICE_DELAY = 30.0
 
 
 def frames_equal(a: Image.Image, b: Image.Image, max_changed: float = 0.002) -> bool:
@@ -50,6 +51,8 @@ class HostState:
     waiting: str = ""
     paused_cred: str | None = None
     paused_fp: bytes | None = None
+    unknown_since: float | None = None
+    unknown_notified: bool = False
 
 
 _FP_KEY = secrets.token_bytes(32)
@@ -195,6 +198,7 @@ class Unlocker:
         for hs in self.hosts.values():
             hs.attempts, hs.failures, hs.paused, hs.next_action, hs.last_notice, hs.waiting = 0, 0, False, 0.0, "", ""
             hs.paused_cred = hs.paused_fp = None
+            hs.unknown_since, hs.unknown_notified = None, False
         log.info("all hosts reset")
 
     def _analyze(self, w: VncWindow) -> tuple[Analysis | None, capture.Capture | None]:
@@ -229,6 +233,17 @@ class Unlocker:
             log.info("[%s] state %s (%s, via %s)", w.key, a.state.value, a.reason, cap.method)
             hs.last_state = a.state
             hs.waiting = ""
+        if a.state == State.UNKNOWN:
+            now = time.monotonic()
+            if hs.unknown_since is None:
+                hs.unknown_since = now
+            elif not hs.unknown_notified and now - hs.unknown_since >= UNKNOWN_NOTICE_DELAY:
+                hs.unknown_notified = True
+                msg = f"Cannot identify the remote screen ({a.reason}); still scanning without sending input"
+                log.warning("[%s] %s", w.key, msg)
+                self.notify_cb(f"VNC Unlocker: {w.key}", msg)
+            return
+        hs.unknown_since, hs.unknown_notified = None, False
         if a.state == State.NOT_LOCKED:
             if hs.attempts or hs.failures or hs.paused:
                 log.info("[%s] unlocked; counters reset", w.key)
@@ -291,26 +306,23 @@ class Unlocker:
         s = self.settings
         end = time.monotonic() + timeout
         prev = None
-        last: tuple[Analysis, capture.Capture] | None = None
         while True:
             cap = capture.capture(w.hwnd)
             if cap is None:
                 raise Interrupted("capture unavailable")
+            a = None
             if prev is not None and frames_equal(prev, cap.image):
                 a = s.analyze(cap.image)
-                last = (a, cap)
                 if until(a):
                     log.info("[%s] state %s (%s)", w.key, a.state.value, a.reason)
                     return a, cap
             prev = cap.image
             if time.monotonic() >= end:
-                if last is None:
-                    cap = capture.capture(w.hwnd) or cap
-                    a = s.analyze(cap.image)
-                    last = (a, cap)
+                if a is None:
+                    a = Analysis(State.UNKNOWN, [], cap.image.width, cap.image.height, "screen still changing")
                 log.info("[%s] screen did not settle in %.0fs; state %s (%s)",
-                         w.key, timeout, last[0].state.value, last[0].reason)
-                return last
+                         w.key, timeout, a.state.value, a.reason)
+                return a, cap
             if session is not None:
                 session.wait(SETTLE_POLL)
             else:
@@ -320,7 +332,7 @@ class Unlocker:
              a: Analysis, cap: capture.Capture) -> None:
         s = self.settings
         input_screen = lambda x: x.state in (State.PASSWORD, State.USER_PASS, State.INCORRECT, State.CAD)  # noqa: E731
-        a, cap = self._settled(w, session, s.settle_timeout)
+        a, cap = self._settled(w, session, s.settle_timeout, lambda x: x.state != State.UNKNOWN)
         if a.state == State.INCORRECT:
             session.key(VK_RETURN)  # dismiss the message; the failure was already counted
             a, cap = self._settled(w, session, s.settle_timeout,
@@ -329,21 +341,20 @@ class Unlocker:
             session.key(VK_SPACE)
             # Require a positive sign-in screen: a transient or misread frame must not count as "unlocked".
             a, cap = self._settled(w, session, s.settle_timeout, input_screen)
-        ox, oy = cap.origin
-
-        account = None
         if a.state == State.PASSWORD:
-            account = match_account(a, host.accounts)
-            if account is None:
+            if match_account(a, host.accounts) is None:
                 default = host.default_account
                 tile = find_tile(a, default) if default else None
                 if tile is not None:
+                    ox, oy = cap.origin
                     log.info("[%s] selecting default account %s", w.key, default.user)
                     session.click(ox + tile.cx, oy + tile.cy)
                     session.wait(s.click_wait)
-                    a, cap = self._settled(w, session, s.settle_timeout)
-                    account = match_account(a, host.accounts) if a.state == State.PASSWORD else None
-            if a.state == State.PASSWORD and account is None:
+                    a, cap = self._settled(w, session, s.settle_timeout, lambda x: x.state != State.UNKNOWN)
+        ox, oy = cap.origin
+        if a.state == State.PASSWORD:
+            account = match_account(a, host.accounts)
+            if account is None:
                 self._pause_host(w.key, "lock screen user does not match any configured account")
                 return
         elif a.state == State.USER_PASS:
@@ -353,6 +364,10 @@ class Unlocker:
                 return
         elif a.state == State.NOT_LOCKED:
             hs.attempts, hs.failures, hs.last_notice = 0, 0, ""
+            return
+        elif a.state == State.UNKNOWN:
+            hs.next_action = time.monotonic() + s.cooldown
+            log.info("[%s] screen unrecognized; no credentials sent (%s)", w.key, a.reason)
             return
         else:
             log.info("[%s] not acting on state %s", w.key, a.state.value)
@@ -396,6 +411,12 @@ class Unlocker:
             hs.attempts, hs.failures, hs.last_notice = 0, 0, ""
             log.info("[%s] unlocked as %s", w.key, account.user)
             self.notify_cb(f"VNC Unlocker: {w.key}", f"Unlocked as {account.user}")
+        elif a.state == State.UNKNOWN:
+            msg = f"could not verify unlock after attempt {hs.attempts}/{s.max_attempts} ({a.reason})"
+            if hs.attempts >= s.max_attempts:
+                self._pause_host(w.key, msg, account.cred)
+            else:
+                log.warning("[%s] %s", w.key, msg)
         elif hs.attempts >= s.max_attempts:
             self._pause_host(w.key, f"unlock failed {hs.attempts} times as {account.user} (last state: {a.state.value})",
                              account.cred)
